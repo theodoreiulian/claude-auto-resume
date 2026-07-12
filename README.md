@@ -99,6 +99,10 @@ claude-auto-resume/
 - Check that the Claude Code session is actually waiting for input
 - The app sends `continue` at reset time + 1 minute to ensure the session has fully reset
 
+## Contributing
+
+Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md) for setup and guidelines.
+
 ## License
 
-MIT
+[MIT](LICENSE)
