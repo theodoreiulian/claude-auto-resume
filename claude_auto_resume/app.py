@@ -147,10 +147,10 @@ class ClaudeAutoResumeApp(rumps.App):
 
     # ─── Polling ───────────────────────────────────────────────────────
 
-    @rumps.timer(60)
+    @rumps.timer(15)
     def _poll_tick(self, _):
         """
-        Main polling loop — runs every 60 seconds.
+        Main polling loop — runs every 15 seconds.
         Checks each WATCHING terminal for the session limit message.
         """
         for tty, watcher in list(self.watchers.items()):
@@ -213,7 +213,10 @@ class ClaudeAutoResumeApp(rumps.App):
             rumps.notification(
                 title="Claude Auto-Resume",
                 subtitle="Resume Failed ❌",
-                message=f"Could not send 'continue' to {tty.replace('/dev/', '')}. The terminal may have been closed.",
+                message=(
+                    f"Could not send 'continue' to {tty.replace('/dev/', '')}. "
+                    f"{watcher.last_error or 'The terminal may have been closed.'}"
+                ),
                 sound=True,
             )
 

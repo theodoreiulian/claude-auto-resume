@@ -16,7 +16,7 @@ from enum import Enum, auto
 from typing import Optional
 
 from .detector import ResetInfo, detect_session_limit
-from .terminal import TerminalInfo, read_content, send_text
+from .terminal import TerminalInfo, read_content, send_text_detailed
 
 logger = logging.getLogger("claude_auto_resume.watcher")
 
@@ -67,7 +67,7 @@ class Watcher:
         """
         Poll the terminal for the session limit message.
 
-        Called by the main app on each tick (every 60s).
+        Called by the main app on each tick (every 15s).
         Returns ResetInfo if a session limit was just detected, None otherwise.
         Only runs when in WATCHING state.
         """
@@ -131,7 +131,7 @@ class Watcher:
 
         logger.info("Sending 'continue' to %s", self.terminal.tty)
 
-        success = send_text(self.terminal.tty, self.terminal.app, "continue")
+        success, error = send_text_detailed(self.terminal.tty, self.terminal.app, "continue")
 
         if success:
             self.resume_count += 1
@@ -144,8 +144,9 @@ class Watcher:
             self.reset_info = None
             self._last_content_hash = None  # Reset so we re-read fresh content
         else:
-            self.last_error = "Failed to send 'continue'"
-            logger.error("Failed to send 'continue' to %s", self.terminal.tty)
+            self.last_error = error or "Failed to send 'continue'"
+            logger.error("Failed to send 'continue' to %s: %s",
+                         self.terminal.tty, self.last_error)
 
         return success
 
