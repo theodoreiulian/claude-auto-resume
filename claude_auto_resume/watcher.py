@@ -77,7 +77,7 @@ class Watcher:
         self.last_error = None
 
         try:
-            content = read_content(self.terminal.tty, self.terminal.app)
+            content = read_content(self.terminal.tty)
         except Exception as e:
             self.last_error = f"Read error: {e}"
             logger.error("Failed to read terminal %s: %s", self.terminal.tty, e)
@@ -131,7 +131,7 @@ class Watcher:
 
         logger.info("Sending 'continue' to %s", self.terminal.tty)
 
-        success, error = send_text_detailed(self.terminal.tty, self.terminal.app, "continue")
+        success, error = send_text_detailed(self.terminal.tty, "continue")
 
         if success:
             self.resume_count += 1

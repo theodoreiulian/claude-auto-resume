@@ -1,16 +1,15 @@
 """
-terminal.py — AppleScript-based terminal interaction layer.
+terminal.py — AppleScript-based Terminal.app interaction layer.
 
-Supports Terminal.app and iTerm2. Uses osascript via subprocess to:
-- List all open terminal windows/tabs/sessions
-- Read visible content from a specific terminal (by TTY)
-- Send text input to a specific terminal (by TTY)
+Uses osascript via subprocess to:
+- List all open Terminal.app windows/tabs
+- Read visible content from a specific tab (by TTY)
+- Send text input to a specific tab (by TTY)
 
-Input is injected through each app's own scripting command (`do script` for
-Terminal.app, `write text` for iTerm2), which places the text in the session's
-pty *input* queue where the foreground program (e.g. Claude Code) reads it.
-Writing to the /dev/ttys* device instead would only paint the characters onto
-the screen — the program's stdin would never see them.
+Input is injected through Terminal.app's own `do script` command, which places
+the text in the session's pty *input* queue where the foreground program (e.g.
+Claude Code) reads it. Writing to the /dev/ttys* device instead would only paint
+the characters onto the screen — the program's stdin would never see them.
 """
 
 import logging
@@ -28,9 +27,8 @@ SEND_SETTLE_DELAY = 1.2
 
 @dataclass
 class TerminalInfo:
-    """Represents a single terminal tab or session."""
+    """Represents a single Terminal.app tab."""
     tty: str           # e.g. "/dev/ttys001"
-    app: str           # "Terminal" or "iTerm2"
     name: str          # Window/tab title
     processes: str     # Running processes description
 
@@ -84,7 +82,7 @@ def _app_is_running(app_name: str) -> bool:
     return result == "true"
 
 
-def _list_terminal_app() -> list[TerminalInfo]:
+def list_terminals() -> list[TerminalInfo]:
     """List all open tabs in Terminal.app."""
     if not _app_is_running("Terminal"):
         return []
@@ -122,58 +120,9 @@ def _list_terminal_app() -> list[TerminalInfo]:
         if len(parts) >= 3:
             terminals.append(TerminalInfo(
                 tty=parts[0].strip(),
-                app="Terminal",
                 name=parts[1].strip(),
                 processes=parts[2].strip(),
             ))
-    return terminals
-
-
-def _list_iterm2() -> list[TerminalInfo]:
-    """List all open sessions in iTerm2."""
-    if not _app_is_running("iTerm2"):
-        return []
-
-    script = '''
-    tell application "iTerm2"
-        set output to ""
-        repeat with w in windows
-            repeat with t in tabs of w
-                repeat with s in sessions of t
-                    set sessionTTY to tty of s
-                    set sessionName to name of s
-                    set output to output & sessionTTY & "|||" & sessionName & "|||" & "\\n"
-                end repeat
-            end repeat
-        end repeat
-        return output
-    end tell
-    '''
-    raw = _run_applescript(script)
-    if not raw:
-        return []
-
-    terminals = []
-    for line in raw.split("\n"):
-        line = line.strip()
-        if not line or "|||" not in line:
-            continue
-        parts = line.split("|||")
-        if len(parts) >= 2:
-            terminals.append(TerminalInfo(
-                tty=parts[0].strip(),
-                app="iTerm2",
-                name=parts[1].strip(),
-                processes="",
-            ))
-    return terminals
-
-
-def list_terminals() -> list[TerminalInfo]:
-    """List all open terminal windows/tabs/sessions across supported apps."""
-    terminals = []
-    terminals.extend(_list_terminal_app())
-    terminals.extend(_list_iterm2())
     return terminals
 
 
@@ -212,51 +161,22 @@ def _terminal_tab_ref(tty: str) -> Optional[tuple[int, int]]:
         return None
 
 
-def read_content(tty: str, app: str) -> Optional[str]:
-    """
-    Read the visible content of a terminal tab/session identified by TTY.
-
-    For Terminal.app, reads the `contents` property (visible screen).
-    For iTerm2, reads the `contents` property of the matching session.
-    """
-    if app == "Terminal":
-        # NOTE: `contents of t` where `t` is a `repeat with t in ...` loop
-        # reference does NOT return the tab's text — `contents` collides with
-        # AppleScript's built-in dereference operator, so it yields the tab's
-        # object specifier (e.g. "tab 1 of window id 6393") instead. We must
-        # reference the tab by index (`contents of tab i of w`) to read text.
-        ref = _terminal_tab_ref(tty)
-        if ref is None:
-            return None
-        wi, ti = ref
-        script = f'''
-        tell application "Terminal"
-            return contents of tab {ti} of window {wi}
-        end tell
-        '''
-    elif app == "iTerm2":
-        # Same `contents` dereference gotcha as Terminal.app above: reference
-        # the session by index (`contents of session i of t`) so `contents`
-        # reads the text property rather than returning the object specifier.
-        script = f'''
-        tell application "iTerm2"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    set i to 0
-                    repeat with s in sessions of t
-                        set i to i + 1
-                        if tty of s is "{tty}" then
-                            return contents of session i of t
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-            return ""
-        end tell
-        '''
-    else:
+def read_content(tty: str) -> Optional[str]:
+    """Read the visible content of a Terminal.app tab identified by TTY."""
+    # NOTE: `contents of t` where `t` is a `repeat with t in ...` loop
+    # reference does NOT return the tab's text — `contents` collides with
+    # AppleScript's built-in dereference operator, so it yields the tab's
+    # object specifier (e.g. "tab 1 of window id 6393") instead. We must
+    # reference the tab by index (`contents of tab i of w`) to read text.
+    ref = _terminal_tab_ref(tty)
+    if ref is None:
         return None
-
+    wi, ti = ref
+    script = f'''
+    tell application "Terminal"
+        return contents of tab {ti} of window {wi}
+    end tell
+    '''
     return _run_applescript(script, timeout=15)
 
 
@@ -325,9 +245,10 @@ def _text_pending_in_prompt(content: str, text: str) -> bool:
     return False
 
 
-def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
+def send_text_detailed(tty: str, text: str) -> tuple[bool, Optional[str]]:
     """
-    Inject `text` + Return into a Terminal.app tab.
+    Inject `text` + Return into a Terminal.app tab, verifying it by re-reading
+    the session.
 
     1. `do script ... in tab` — real input injection.
     2. `do script "" in tab` — a bare Return, if the text landed but wasn't submitted
@@ -335,13 +256,15 @@ def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
 
     Deliberately AppleScript-only: no System Events / `keystroke` path, so this never
     triggers a macOS Accessibility permission prompt and never steals keyboard focus.
+
+    Returns (success, error message).
     """
     ref = _terminal_tab_ref(tty)
     if ref is None:
         return False, "Terminal tab not found (closed?)"
     wi, ti = ref
 
-    before = read_content(tty, "Terminal") or ""
+    before = read_content(tty) or ""
 
     # ── Stage 1: native injection ──────────────────────────────────────
     ok, _, err = _run_applescript_raw(f'''
@@ -356,7 +279,7 @@ def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
 
     logger.info("Stage 1: injected %r into %s via `do script`", text, tty)
     time.sleep(SEND_SETTLE_DELAY)
-    after = read_content(tty, "Terminal") or ""
+    after = read_content(tty) or ""
 
     if _text_pending_in_prompt(after, text):
         # ── Stage 2: the text landed but was never submitted ───────────
@@ -371,7 +294,7 @@ def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
             return False, f"Text was typed but the Return failed: {err2}"
 
         time.sleep(SEND_SETTLE_DELAY)
-        if _text_pending_in_prompt(read_content(tty, "Terminal") or "", text):
+        if _text_pending_in_prompt(read_content(tty) or "", text):
             return False, "Text was typed but Claude Code did not submit it"
         logger.info("Stage 2 succeeded on %s", tty)
         return True, None
@@ -383,7 +306,7 @@ def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
     # Nothing visibly changed. Give the UI one more beat before concluding the
     # send didn't land — re-sending would risk duplicating the prompt.
     time.sleep(SEND_SETTLE_DELAY)
-    after = read_content(tty, "Terminal") or ""
+    after = read_content(tty) or ""
     if _text_pending_in_prompt(after, text):
         logger.info("Stage 2 (delayed): %r still in the input box; sending bare Return", text)
         _run_applescript_raw(f'''
@@ -392,7 +315,7 @@ def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
         end tell
         ''')
         time.sleep(SEND_SETTLE_DELAY)
-        if _text_pending_in_prompt(read_content(tty, "Terminal") or "", text):
+        if _text_pending_in_prompt(read_content(tty) or "", text):
             return False, "Text was typed but Claude Code did not submit it"
         return True, None
 
@@ -404,47 +327,7 @@ def _send_terminal(tty: str, text: str) -> tuple[bool, Optional[str]]:
     return False, "Sent the text but the terminal did not react — is the session still alive?"
 
 
-def send_text_detailed(tty: str, app: str, text: str) -> tuple[bool, Optional[str]]:
-    """
-    Send text followed by Enter to a terminal tab/session identified by TTY.
-
-    For Terminal.app: injects input via `do script` and verifies it by re-reading
-    the session. For iTerm2: uses the `write text` AppleScript command.
-
-    Returns (success, error message).
-    """
-    if app == "iTerm2":
-        # iTerm2 has a reliable `write text` command
-        escaped_text = _escape_applescript(text)
-        script = f'''
-        tell application "iTerm2"
-            repeat with w in windows
-                repeat with t in tabs of w
-                    repeat with s in sessions of t
-                        if tty of s is "{tty}" then
-                            tell s to write text "{escaped_text}"
-                            return "ok"
-                        end if
-                    end repeat
-                end repeat
-            end repeat
-            return "not_found"
-        end tell
-        '''
-        result = _run_applescript(script)
-        if result == "ok":
-            return True, None
-        if result == "not_found":
-            return False, "iTerm2 session not found (closed?)"
-        return False, "iTerm2 `write text` failed"
-
-    elif app == "Terminal":
-        return _send_terminal(tty, text)
-
-    return False, f"Unsupported terminal app: {app}"
-
-
-def send_text(tty: str, app: str, text: str) -> bool:
-    """Send text + Enter to a terminal. Returns True on success."""
-    ok, _ = send_text_detailed(tty, app, text)
+def send_text(tty: str, text: str) -> bool:
+    """Send text + Enter to a terminal tab. Returns True on success."""
+    ok, _ = send_text_detailed(tty, text)
     return ok

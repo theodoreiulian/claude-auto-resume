@@ -17,7 +17,7 @@ See the "Project Structure" section in [README.md](README.md).
 
 1. Fork the repo and create a branch from `main`.
 2. Make your change, keeping it focused and scoped.
-3. Test manually against Terminal.app and/or iTerm2 if your change touches `terminal.py`, `detector.py`, or `watcher.py`.
+3. Test manually against Terminal.app if your change touches `terminal.py`, `detector.py`, or `watcher.py`.
 4. Open a pull request describing what changed and why.
 
 ## Reporting issues

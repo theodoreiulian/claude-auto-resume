@@ -49,10 +49,7 @@ Click **Active Watches** to see all terminals you're monitoring and their curren
 
 ## Supported Terminals
 
-| Terminal | Support Level |
-|----------|--------------|
-| Terminal.app | ✅ Full support |
-| iTerm2 | ✅ Full support |
+Only macOS's built-in **Terminal.app** is supported.
 
 ## Permissions
 
@@ -86,12 +83,12 @@ claude-auto-resume/
 ## Troubleshooting
 
 ### "No terminals found"
-- Make sure Terminal.app or iTerm2 is open with at least one window
-- If you just opened the terminal app, click **↻ Refresh**
+- Make sure Terminal.app is open with at least one window
+- If you just opened Terminal.app, click **↻ Refresh**
 
 ### App can't read terminal content
 - Check **System Settings → Privacy & Security → Automation**
-- Make sure your Python/Terminal is allowed to control Terminal.app/iTerm2
+- Make sure your Python/Terminal is allowed to control Terminal.app
 - Try removing and re-adding the permission
 
 ### "continue" not being sent
