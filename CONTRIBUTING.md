@@ -17,8 +17,11 @@ See the "Project Structure" section in [README.md](README.md).
 
 1. Fork the repo and create a branch from `main`.
 2. Make your change, keeping it focused and scoped.
-3. Test manually against Terminal.app if your change touches `terminal.py`, `detector.py`, or `watcher.py`.
-4. Open a pull request describing what changed and why.
+3. Run `python3 -m unittest discover -s tests`.
+4. Test manually against Terminal.app and Conductor if your change touches
+   `terminal.py`, `conductor.py`, `targets.py`, `detector.py`, or `watcher.py`.
+   `./doctor.sh` lists what the app can currently see.
+5. Open a pull request describing what changed and why.
 
 ## Reporting issues
 

@@ -1,7 +1,8 @@
 """
-watcher.py — Per-terminal watcher with state machine.
+watcher.py — Per-target watcher with state machine.
 
-Each Watcher monitors a single terminal session, transitioning through:
+Each Watcher monitors a single Claude Code session — a Terminal.app tab or a
+Conductor workspace — transitioning through:
     WATCHING → LIMIT_DETECTED → WAITING_TO_RESUME → RESUMED → WATCHING
 
 The watcher is driven by the main app's polling timer — it doesn't create
@@ -16,7 +17,7 @@ from enum import Enum, auto
 from typing import Optional
 
 from .detector import ResetInfo, detect_session_limit
-from .terminal import TerminalInfo, read_content, send_text_detailed
+from .targets import Target, TargetKind, read_content, send_text_detailed
 
 logger = logging.getLogger("claude_auto_resume.watcher")
 
@@ -33,12 +34,12 @@ class WatcherState(Enum):
 @dataclass
 class Watcher:
     """
-    Manages the lifecycle of watching a single terminal session.
+    Manages the lifecycle of watching a single Claude Code session.
 
     The main app calls `poll()` on each tick, and `fire_resume()` when
     the scheduled timer goes off.
     """
-    terminal: TerminalInfo
+    target: Target
     state: WatcherState = WatcherState.WATCHING
     reset_info: Optional[ResetInfo] = None
     resume_count: int = 0                    # How many times we've auto-resumed
@@ -65,7 +66,7 @@ class Watcher:
 
     def poll(self) -> Optional[ResetInfo]:
         """
-        Poll the terminal for the session limit message.
+        Poll the target for the session limit message.
 
         Called by the main app on each tick (every 15s).
         Returns ResetInfo if a session limit was just detected, None otherwise.
@@ -77,15 +78,21 @@ class Watcher:
         self.last_error = None
 
         try:
-            content = read_content(self.terminal.tty)
+            content = read_content(self.target)
         except Exception as e:
             self.last_error = f"Read error: {e}"
-            logger.error("Failed to read terminal %s: %s", self.terminal.tty, e)
+            logger.error("Failed to read %s: %s", self.target.key, e)
             return None
 
         if content is None:
-            self.last_error = "Terminal not found (closed?)"
-            logger.warning("Terminal %s returned no content", self.terminal.tty)
+            # What "no content" means depends on the backend. A Terminal tab that reads
+            # back nothing has been closed, which is worth surfacing. Conductor returns
+            # None on almost every poll — it only reports standing limit notices — so
+            # treating that as an error would flag every healthy session as broken.
+            if self.target.kind is TargetKind.TERMINAL:
+                self.last_error = "Terminal not found (closed?)"
+                logger.warning("Terminal %s returned no content", self.target.ref)
+            self._last_content_hash = None
             return None
 
         # Skip if content hasn't changed
@@ -102,7 +109,7 @@ class Watcher:
         # Detected!
         logger.info(
             "Session limit detected on %s! Resets at %s, will resume at %s",
-            self.terminal.tty,
+            self.target.key,
             reset_info.reset_time.strftime("%I:%M %p"),
             reset_info.resume_time.strftime("%I:%M %p"),
         )
@@ -116,7 +123,7 @@ class Watcher:
 
     def fire_resume(self) -> bool:
         """
-        Send "continue" to the watched terminal.
+        Send "continue" to the watched session.
 
         Called by the main app when the scheduled resume timer fires.
         Returns True if the text was sent successfully.
@@ -124,20 +131,20 @@ class Watcher:
         if self.state != WatcherState.WAITING_TO_RESUME:
             logger.warning(
                 "fire_resume called on %s in unexpected state %s",
-                self.terminal.tty,
+                self.target.key,
                 self.state,
             )
             return False
 
-        logger.info("Sending 'continue' to %s", self.terminal.tty)
+        logger.info("Sending 'continue' to %s", self.target.key)
 
-        success, error = send_text_detailed(self.terminal.tty, "continue")
+        success, error = send_text_detailed(self.target, "continue")
 
         if success:
             self.resume_count += 1
             self.state = WatcherState.RESUMED
             logger.info("Successfully resumed session on %s (count: %d)",
-                        self.terminal.tty, self.resume_count)
+                        self.target.key, self.resume_count)
 
             # Transition back to WATCHING for the next cycle
             self.state = WatcherState.WATCHING
@@ -146,15 +153,15 @@ class Watcher:
         else:
             self.last_error = error or "Failed to send 'continue'"
             logger.error("Failed to send 'continue' to %s: %s",
-                         self.terminal.tty, self.last_error)
+                         self.target.key, self.last_error)
 
         return success
 
     def stop(self):
-        """Stop watching this terminal."""
+        """Stop watching this target."""
         self.state = WatcherState.STOPPED
         self.reset_info = None
-        logger.info("Stopped watching %s", self.terminal.tty)
+        logger.info("Stopped watching %s", self.target.key)
 
     def seconds_until_resume(self) -> Optional[float]:
         """

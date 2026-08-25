@@ -16,6 +16,7 @@ What you expected to happen instead.
 
 **Environment**
 - macOS version:
+- Host (Terminal.app / Conductor):
 - Python version:
 - Claude Auto-Resume version:
 
