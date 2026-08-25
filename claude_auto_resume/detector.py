@@ -4,6 +4,11 @@ detector.py — Detect Claude Code session limit messages and extract reset time
 Parses messages like:
     "You've hit your session limit · resets 5:00 PM EDT"
     "You've hit your session limit · resets 5pm (Eastern Daylight Time)"
+    "You've hit your session limit · resets 10:20pm (Europe/Paris)"
+
+The last form is what Claude Code emits under Conductor, which renders the CLI's
+stream-json output rather than its terminal UI. It names an IANA zone instead of an
+abbreviation, so it can be resolved exactly.
 
 Extracts the reset time and converts it to a local datetime for scheduling.
 """
@@ -12,6 +17,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
 # Common timezone abbreviations → UTC offset in hours
@@ -47,7 +53,7 @@ class ResetInfo:
     """Information about when a Claude Code session resets."""
     reset_time: datetime      # Local datetime when the session resets
     resume_time: datetime     # reset_time + 1 minute (when we should send "continue")
-    raw_text: str             # The raw matched text from the terminal
+    raw_text: str             # The raw matched text from the session
 
 
 def _parse_time_string(time_str: str) -> Optional[tuple[int, int]]:
@@ -106,6 +112,32 @@ def _parse_time_string(time_str: str) -> Optional[tuple[int, int]]:
     return None
 
 
+def _resolve_timezone(tz_str: Optional[str]) -> Optional[timezone | ZoneInfo]:
+    """
+    Turn a timezone string from the limit message into a tzinfo, or None.
+
+    Handles the two shapes Claude Code produces: an IANA name like "Europe/Paris"
+    (Conductor) and an abbreviation like "EDT" (the terminal UI). Anything else —
+    a spelled-out name like "Eastern Daylight Time" — yields None, and the caller
+    falls back to treating the time as local.
+    """
+    if not tz_str:
+        return None
+    tz_str = tz_str.strip()
+
+    # IANA name, e.g. "Europe/Paris". Exact, including the right DST offset for the date.
+    if "/" in tz_str:
+        try:
+            return ZoneInfo(tz_str)
+        except (ZoneInfoNotFoundError, ValueError):
+            return None
+
+    offset_hours = _TZ_OFFSETS.get(tz_str.upper())
+    if offset_hours is None:
+        return None
+    return timezone(timedelta(hours=offset_hours))
+
+
 def _resolve_reset_datetime(
     hour: int,
     minute: int,
@@ -113,34 +145,43 @@ def _resolve_reset_datetime(
 ) -> datetime:
     """
     Convert a parsed reset time (hour, minute) + optional timezone string
-    into a local datetime object.
+    into a naive local datetime for scheduling.
+
+    Claude Code normally reports the reset in the user's own timezone, in which case
+    interpreting it locally and interpreting it in the named zone agree. They diverge
+    when the reported zone isn't the machine's — a laptop that travelled, or a zone
+    set per-account — and there the named zone is the correct reading.
 
     If the resulting time is in the past, assume it's tomorrow.
     """
-    now = datetime.now()
+    tz = _resolve_timezone(tz_str)
 
-    # Build a candidate datetime for today
-    candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if tz is None:
+        # No usable zone: read the time as local wall-clock.
+        now = datetime.now()
+        candidate = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if candidate <= now:
+            candidate += timedelta(days=1)
+        return candidate
 
-    # If a timezone abbreviation was provided, we may need to adjust.
-    # However, Claude Code typically shows the time in the user's local timezone,
-    # so we treat it as local time unless we have reason not to.
-    # The timezone is displayed for informational purposes.
-
-    # If the time is in the past, it means the reset is tomorrow
-    if candidate <= now:
+    now_there = datetime.now(timezone.utc).astimezone(tz)
+    candidate = now_there.replace(hour=hour, minute=minute, second=0, microsecond=0)
+    if candidate <= now_there:
         candidate += timedelta(days=1)
 
-    return candidate
+    # Back to a naive local datetime — the rest of the app compares against
+    # `datetime.now()`, so everything downstream stays in local wall-clock time.
+    return candidate.astimezone().replace(tzinfo=None)
 
 
 def detect_session_limit(content: str) -> Optional[ResetInfo]:
     """
-    Scan terminal content for Claude Code's session limit message.
+    Scan content for Claude Code's session limit message.
 
     Looks for patterns like:
         "You've hit your session limit · resets 5:00 PM EDT"
         "You've hit your session limit · resets 5pm (Eastern Daylight Time)"
+        "You've hit your session limit · resets 10:20pm (Europe/Paris)"
         "session limit · resets 5:00 PM"
 
     Returns ResetInfo with parsed reset/resume times, or None if not found.
