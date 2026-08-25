@@ -2,7 +2,7 @@
 app.py — Main Claude Auto-Resume menu bar application.
 
 A lightweight macOS menu bar app built with rumps that:
-1. Lists open terminal windows from Terminal.app and iTerm2
+1. Lists open terminal windows from Terminal.app
 2. Lets the user select terminals to watch
 3. Polls watched terminals every 60 seconds for session limit messages
 4. Schedules automatic "continue" sends at the reset time + 1 minute
@@ -100,7 +100,7 @@ class ClaudeAutoResumeApp(rumps.App):
 
                 # Build a descriptive label
                 short_tty = term.tty.replace("/dev/", "")
-                label = f"{term.app}: {term.name} ({short_tty})"
+                label = f"{term.name} ({short_tty})"
 
                 item = rumps.MenuItem(label, callback=partial(self._on_watch_terminal, term))
                 self.watch_menu.add(item)

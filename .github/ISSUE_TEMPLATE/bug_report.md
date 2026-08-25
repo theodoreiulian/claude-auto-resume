@@ -16,7 +16,6 @@ What you expected to happen instead.
 
 **Environment**
 - macOS version:
-- Terminal app (Terminal.app / iTerm2):
 - Python version:
 - Claude Auto-Resume version:
 
