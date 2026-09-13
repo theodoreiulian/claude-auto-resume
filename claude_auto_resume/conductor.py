@@ -8,13 +8,14 @@ stream itself. There is no terminal buffer to scrape, so reading and writing wor
 differently from `terminal.py`:
 
 - **Read** comes from Conductor's own SQLite store (read-only). Each session's raw
-  stream-json messages are kept in `session_messages`, which includes the synthetic
-  assistant message Claude Code emits when it hits the session limit.
+  stream-json messages are kept in `session_messages`, which includes the notice the
+  agent emits when it hits its limit: a synthetic assistant message from Claude Code,
+  an error envelope from Codex.
 - **Write** goes through the UI via Accessibility, because the only supported way to
   put a message into a session is Conductor's composer. See `send_text_detailed`.
 
-Only Claude Code sessions are supported. Conductor can also drive Codex, Cursor, and
-OpenCode, which have their own limit semantics — `sessions.agent_type` filters those out.
+Claude Code and Codex sessions are supported. Conductor can also drive Cursor and
+OpenCode, whose limits aren't reported this way — `sessions.agent_type` filters those out.
 """
 
 import json
@@ -36,9 +37,12 @@ CONDUCTOR_DB = (
 CONDUCTOR_PROCESS = "conductor"
 CONDUCTOR_BUNDLE_ID = "com.conductor.app"
 
-# `agent_type` value for Claude Code sessions. Codex/Cursor/OpenCode sessions use
+# `agent_type` values we watch, and how to name them. Cursor/OpenCode sessions use
 # other values and are deliberately not supported.
-CLAUDE_AGENT_TYPE = "claude"
+AGENT_LABELS = {
+    "claude": "Claude Code",
+    "codex": "Codex",
+}
 
 # Claude Code stamps messages it generates itself (rather than the model) with this
 # model name. The session limit notice is one of them, and gating on it is what
@@ -46,19 +50,30 @@ CLAUDE_AGENT_TYPE = "claude"
 # in a tool result or its own prose.
 SYNTHETIC_MODEL = "<synthetic>"
 
+# Codex has no synthetic assistant message. Its usage limit arrives as a turn error,
+# which Conductor stores as `{"type": "error", "content": "You've hit your usage
+# limit…", "willRetry": false, "errorInfo": "usageLimitExceeded"}`. Error envelopes
+# come from the harness, never the model, so they serve the same gating purpose.
+ERROR_ENVELOPE = "error"
+
 # How many of a session's most recent messages to scan for the limit notice.
 _SCAN_DEPTH = 40
 
 
 @dataclass
 class ConductorSession:
-    """A Conductor workspace and the Claude Code session currently open in it."""
+    """A Conductor workspace and the agent session currently open in it."""
     workspace_id: str
     session_id: str
     workspace_name: str   # Display name for the workspace (falls back to directory)
     session_title: str    # e.g. "Strip iTerm2 Support"
-    status: str           # Conductor's session status, e.g. "idle" / "working"
+    status: str           # Conductor's session status, e.g. "idle" / "working" / "error"
     branch: str           # Git branch, which Conductor shows in its window header
+    agent_type: str = "claude"  # A key of AGENT_LABELS
+
+    @property
+    def agent_label(self) -> str:
+        return AGENT_LABELS.get(self.agent_type, self.agent_type)
 
 
 def is_available() -> bool:
@@ -88,7 +103,7 @@ def _connect() -> Optional[sqlite3.Connection]:
 
 def list_sessions() -> list[ConductorSession]:
     """
-    List each live Conductor workspace's currently-open Claude Code session.
+    List each live Conductor workspace's currently-open Claude Code or Codex session.
 
     Conductor allows several sessions per workspace, but only one is open and visible
     at a time — `workspaces.active_session_id`. That's the one we watch, so a workspace
@@ -98,23 +113,25 @@ def list_sessions() -> list[ConductorSession]:
     if conn is None:
         return []
 
+    agent_types = tuple(AGENT_LABELS)
     try:
         rows = conn.execute(
-            """
+            f"""
             SELECT w.id,
                    s.id,
                    COALESCE(NULLIF(w.workspace_name, ''), NULLIF(w.directory_name, ''), w.id),
                    COALESCE(NULLIF(s.title, ''), 'Untitled'),
                    COALESCE(s.status, 'idle'),
-                   COALESCE(w.branch, '')
+                   COALESCE(w.branch, ''),
+                   s.agent_type
               FROM workspaces w
               JOIN sessions s ON s.id = w.active_session_id
              WHERE COALESCE(w.state, 'active') != 'archived'
-               AND s.agent_type = ?
+               AND s.agent_type IN ({", ".join("?" for _ in agent_types)})
                AND COALESCE(s.is_hidden, 0) = 0
              ORDER BY w.updated_at DESC
             """,
-            (CLAUDE_AGENT_TYPE,),
+            agent_types,
         ).fetchall()
     except sqlite3.Error as e:
         logger.error("Failed to list Conductor sessions: %s", e)
@@ -130,13 +147,14 @@ def list_sessions() -> list[ConductorSession]:
             session_title=r[3],
             status=r[4],
             branch=r[5],
+            agent_type=r[6],
         )
         for r in rows
     ]
 
 
 def get_session(workspace_id: str) -> Optional[ConductorSession]:
-    """Re-resolve a workspace's currently-open Claude session, or None if it's gone."""
+    """Re-resolve a workspace's currently-open agent session, or None if it's gone."""
     for session in list_sessions():
         if session.workspace_id == workspace_id:
             return session
@@ -174,18 +192,46 @@ def _synthetic_limit_text(raw: str) -> Optional[str]:
     return text or None
 
 
+def _error_envelope_text(raw: str) -> Optional[str]:
+    """
+    Return the text of an agent error envelope, or None for any other message.
+
+    This is how Codex's usage limit notice arrives. Errors the agent is about to retry
+    on its own ("Reconnecting... 2/5") are skipped: they don't leave the session stuck.
+    """
+    if ERROR_ENVELOPE not in raw:
+        return None
+    try:
+        data = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+
+    if not isinstance(data, dict) or data.get("type") != ERROR_ENVELOPE:
+        return None
+    if data.get("willRetry"):
+        return None
+    content = data.get("content")
+    return content if isinstance(content, str) and content else None
+
+
+def _limit_notice_text(raw: str) -> Optional[str]:
+    """Text of a harness-generated notice (Claude Code or Codex), or None."""
+    return _synthetic_limit_text(raw) or _error_envelope_text(raw)
+
+
 def read_content(workspace_id: str) -> Optional[str]:
     """
-    Return text to scan for the session limit notice, or None if there's nothing to report.
+    Return text to scan for the limit notice, or None if there's nothing to report.
 
     This is the Conductor counterpart to `terminal.read_content`, but it returns *only*
-    synthetic Claude Code notices rather than everything on screen. Returning the whole
-    transcript would be actively wrong: an agent that reads or writes about the limit
-    message puts that exact phrase into its own transcript, and we would resume a session
-    that was never limited.
+    notices the agent's harness generated — Claude Code's synthetic messages, Codex's
+    error envelopes — rather than everything on screen. Returning the whole transcript
+    would be actively wrong: an agent that reads or writes about the limit message puts
+    that exact phrase into its own transcript, and we would resume a session that was
+    never limited.
 
     Returns None when the session's most recent activity is not a standing limit — either
-    no synthetic notice is present, or the user has already sent a message after it, which
+    no such notice is present, or the user has already sent a message after it, which
     means the session has moved on.
     """
     session = get_session(workspace_id)
@@ -225,7 +271,7 @@ def read_content(workspace_id: str) -> Optional[str]:
     for role, content in rows:
         if role == "user":
             return None
-        text = _synthetic_limit_text(content or "")
+        text = _limit_notice_text(content or "")
         if text:
             return text
 

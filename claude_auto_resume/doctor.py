@@ -43,7 +43,7 @@ def main() -> int:
     else:
         print(f"  {OK} Installed")
         if sessions:
-            print(f"  {OK} {len(sessions)} Claude Code session(s) open")
+            print(f"  {OK} {len(sessions)} Claude Code / Codex session(s) open")
             for t in sessions:
                 limited = conductor.read_content(t.ref)
                 state = f"limited — {limited}" if limited else "no limit detected"
@@ -64,8 +64,8 @@ def main() -> int:
                     print(f"  {WARN} Could not tell which workspace Conductor has open —")
                     print("     a resume will try to switch to it with \u2318K.")
         else:
-            print(f"  {WARN} No open Claude Code sessions")
-            print("     Codex, Cursor and OpenCode sessions are not supported.")
+            print(f"  {WARN} No open Claude Code or Codex sessions")
+            print("     Cursor and OpenCode sessions are not supported.")
 
         if conductor.has_accessibility_permission():
             print(f"  {OK} Accessibility permission granted (needed to send 'continue')")

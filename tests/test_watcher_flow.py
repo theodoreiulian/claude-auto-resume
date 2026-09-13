@@ -79,6 +79,54 @@ class WatcherFlowTest(unittest.TestCase):
             self.assertIsNone(watcher.poll())
         self.assertIn("not found", watcher.last_error)
 
+    def test_terminal_notice_left_on_screen_is_not_resumed_twice(self):
+        """
+        A terminal keeps showing the notice after the resume. Read again, a same-day time
+        would roll to tomorrow and send a second, unwanted "continue".
+        """
+        tab = Target(kind=TargetKind.TERMINAL, ref="/dev/ttys004", name="codex", detail="")
+        watcher = Watcher(target=tab)
+        notice = (
+            "■ You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), "
+            "visit\nhttps://chatgpt.com/codex/settings/usage to purchase more credits or try "
+            "again at 11:54 PM.\n"
+        )
+        screens = [
+            f"› fix the bug\n\n{notice}\n› Ask Codex to do anything\n",
+            f"› fix the bug\n\n{notice}\n› continue\n\n• Working (3s • esc to interrupt)\n",
+        ]
+
+        with mock.patch("claude_auto_resume.watcher.read_content", side_effect=screens), \
+             mock.patch("claude_auto_resume.watcher.send_text_detailed",
+                        return_value=(True, None)):
+            self.assertIsNotNone(watcher.poll())
+            self.assertTrue(watcher.fire_resume())
+            self.assertIsNone(watcher.poll())
+
+        self.assertEqual(watcher.state, WatcherState.WATCHING)
+
+        # A new, different notice further down is a new limit.
+        later = notice.replace("11:54 PM", "Sep 11th, 2026 4:54 AM")
+        with mock.patch("claude_auto_resume.watcher.read_content",
+                        return_value=screens[1] + f"\n{later}\n› Ask Codex to do anything\n"):
+            info = watcher.poll()
+        self.assertIsNotNone(info)
+        self.assertEqual(info.reset_label, "Sep 11th, 2026 4:54 AM")
+
+    def test_same_notice_counts_again_once_it_has_left_the_screen(self):
+        tab = Target(kind=TargetKind.TERMINAL, ref="/dev/ttys004", name="codex", detail="")
+        watcher = Watcher(target=tab)
+        notice = "You've hit your usage limit or try again at 11:54 PM."
+
+        with mock.patch("claude_auto_resume.watcher.read_content",
+                        side_effect=[notice, "all quiet", f"later\n{notice}"]), \
+             mock.patch("claude_auto_resume.watcher.send_text_detailed",
+                        return_value=(True, None)):
+            self.assertIsNotNone(watcher.poll())
+            watcher.fire_resume()
+            self.assertIsNone(watcher.poll())       # notice gone: guard released
+            self.assertIsNotNone(watcher.poll())    # so its return is a real limit
+
     def test_limit_moves_watcher_to_waiting_and_schedules_ahead(self):
         watcher = Watcher(target=self.target)
         self._hit_limit()

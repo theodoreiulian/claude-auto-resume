@@ -8,8 +8,8 @@ Uses osascript via subprocess to:
 
 Input is injected through Terminal.app's own `do script` command, which places
 the text in the session's pty *input* queue where the foreground program (e.g.
-Claude Code) reads it. Writing to the /dev/ttys* device instead would only paint
-the characters onto the screen — the program's stdin would never see them.
+Claude Code or Codex) reads it. Writing to the /dev/ttys* device instead would only
+paint the characters onto the screen — the program's stdin would never see them.
 """
 
 import logging
@@ -221,27 +221,53 @@ def _input_box_lines(content: str) -> Optional[list[str]]:
     return lines[top + 1:bottom]
 
 
+# Around its usage limit the Codex CLI can open an "Approaching rate limits" picker
+# offering a cheaper model. While it's up, typed text is swallowed and the Return that
+# `do script` appends would accept the highlighted option — switching the user's model.
+_CODEX_RATE_LIMIT_PROMPT = "Approaching rate limits"
+_CODEX_PICKER_FOOTER = "esc to go back"
+
+# The picker is a bottom pane; this many non-blank lines from the bottom cover it.
+_CODEX_PICKER_LINES = 12
+
+
+def _codex_rate_limit_prompt_open(content: str) -> bool:
+    """True if Codex's model-switch picker is open at the bottom of the screen."""
+    tail = [line for line in content.splitlines() if line.strip()][-_CODEX_PICKER_LINES:]
+    heading = next(
+        (i for i, line in enumerate(tail) if _CODEX_RATE_LIMIT_PROMPT in line), None
+    )
+    return heading is not None and any(
+        _CODEX_PICKER_FOOTER in line for line in tail[heading + 1:]
+    )
+
+
+def _is_prompt_line(line: str) -> bool:
+    return line.strip(_BOX_CHARS).startswith(_PROMPT_MARKERS)
+
+
 def _text_pending_in_prompt(content: str, text: str) -> bool:
     """
-    True if `text` looks like it is sitting unsubmitted in Claude Code's input box.
+    True if `text` looks like it is sitting unsubmitted in the agent's input box.
 
-    Prefers the fenced input box (see `_input_box_lines`); falls back to scanning
-    the last few lines for a `│ > continue`-style prompt marker on older builds
-    that don't draw the rules.
+    Prefers Claude Code's fenced input box (see `_input_box_lines`), provided the
+    fence really holds a prompt line — other output can draw rules too. Otherwise the
+    input is the *last* prompt-marker line on screen. Codex and older Claude Code
+    builds draw no rules, and both echo a submitted prompt into the transcript with
+    the same marker as the live input (`› continue`), so only the bottom-most one
+    tells "typed but not sent" apart from "sent".
     """
     needle = text.strip()
     if not needle:
         return False
 
     region = _input_box_lines(content)
-    if region is not None:
+    if region is not None and any(_is_prompt_line(line) for line in region):
         return any(needle in line for line in region)
 
-    lines = [ln for ln in content.splitlines() if ln.strip(_BOX_CHARS)]
-    for line in lines[-10:]:
-        stripped = line.strip(_BOX_CHARS)
-        if stripped.startswith(_PROMPT_MARKERS) and needle in stripped[1:]:
-            return True
+    for line in reversed(content.splitlines()):
+        if _is_prompt_line(line):
+            return needle in line.strip(_BOX_CHARS)[1:]
     return False
 
 
@@ -250,9 +276,11 @@ def send_text_detailed(tty: str, text: str) -> tuple[bool, Optional[str]]:
     Inject `text` + Return into a Terminal.app tab, verifying it by re-reading
     the session.
 
+    0. If Codex's "Approaching rate limits" picker is open, close it with Esc first.
     1. `do script ... in tab` — real input injection.
     2. `do script "" in tab` — a bare Return, if the text landed but wasn't submitted
-       (Claude Code's input can treat a fast trailing newline as a literal newline).
+       (Claude Code's input can treat a fast trailing newline as a literal newline, and
+       Codex reads text and Return arriving in one burst as a paste).
 
     Deliberately AppleScript-only: no System Events / `keystroke` path, so this never
     triggers a macOS Accessibility permission prompt and never steals keyboard focus.
@@ -265,6 +293,25 @@ def send_text_detailed(tty: str, text: str) -> tuple[bool, Optional[str]]:
     wi, ti = ref
 
     before = read_content(tty) or ""
+
+    if _codex_rate_limit_prompt_open(before):
+        # ── Stage 0: close Codex's model-switch picker, never accepting it ──
+        # `do script` always appends a Return. After a lone Esc, the pair reads as
+        # Alt+Return, which the picker ignores. Two Escs read as one Esc, which closes
+        # it, and the Return then lands on an empty composer, where it does nothing.
+        logger.info("Stage 0: dismissing Codex's rate limit prompt on %s", tty)
+        ok, _, err = _run_applescript_raw(f'''
+        tell application "Terminal"
+            do script ((character id 27) & (character id 27)) in tab {ti} of window {wi}
+        end tell
+        ''')
+        if not ok:
+            return False, f"Could not dismiss Codex's rate limit prompt: {err}"
+
+        time.sleep(SEND_SETTLE_DELAY)
+        before = read_content(tty) or ""
+        if _codex_rate_limit_prompt_open(before):
+            return False, "Codex's \"Approaching rate limits\" prompt is open and would not close"
 
     # ── Stage 1: native injection ──────────────────────────────────────
     ok, _, err = _run_applescript_raw(f'''
@@ -295,7 +342,7 @@ def send_text_detailed(tty: str, text: str) -> tuple[bool, Optional[str]]:
 
         time.sleep(SEND_SETTLE_DELAY)
         if _text_pending_in_prompt(read_content(tty) or "", text):
-            return False, "Text was typed but Claude Code did not submit it"
+            return False, "Text was typed but the session did not submit it"
         logger.info("Stage 2 succeeded on %s", tty)
         return True, None
 
@@ -316,7 +363,7 @@ def send_text_detailed(tty: str, text: str) -> tuple[bool, Optional[str]]:
         ''')
         time.sleep(SEND_SETTLE_DELAY)
         if _text_pending_in_prompt(read_content(tty) or "", text):
-            return False, "Text was typed but Claude Code did not submit it"
+            return False, "Text was typed but the session did not submit it"
         return True, None
 
     if after != before:
