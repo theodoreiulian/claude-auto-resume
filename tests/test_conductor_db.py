@@ -16,7 +16,9 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from claude_auto_resume import conductor
 from claude_auto_resume.detector import detect_session_limit
-from tests.support import LIMIT_TEXT, SCHEMA, assistant_prose, synthetic
+from tests.support import (
+    CODEX_LIMIT_TEXT, LIMIT_TEXT, SCHEMA, assistant_prose, codex_error, synthetic,
+)
 
 
 class ConductorDBTest(unittest.TestCase):
@@ -68,15 +70,19 @@ class ConductorDBTest(unittest.TestCase):
         self.assertEqual(sessions[0].workspace_name, "daegu")
         self.assertEqual(sessions[0].session_title, "Strip iTerm2 Support")
 
-    def test_excludes_non_claude_agents(self):
-        """Codex and Cursor sessions have their own limit semantics; skip them."""
-        for i, agent in enumerate(("codex", "cursor", "opencode")):
+    def test_excludes_unsupported_agents(self):
+        """Cursor and OpenCode don't report limits the way we read them; skip them."""
+        for i, agent in enumerate(("cursor", "opencode")):
             self.add_workspace(ws=f"ws{i}", session=f"s{i}", agent_type=agent, name=agent)
         self.assertEqual(conductor.list_sessions(), [])
 
-        # ...but a Claude session in the same store is still found.
+        # ...but Claude and Codex sessions in the same store are found.
         self.add_workspace(ws="wsc", session="sc", agent_type="claude", name="daegu")
-        self.assertEqual([s.workspace_name for s in conductor.list_sessions()], ["daegu"])
+        self.add_workspace(ws="wsx", session="sx", agent_type="codex", name="chisinau")
+        self.assertEqual(
+            sorted((s.workspace_name, s.agent_label) for s in conductor.list_sessions()),
+            [("chisinau", "Codex"), ("daegu", "Claude Code")],
+        )
 
     def test_excludes_archived_workspaces_and_hidden_sessions(self):
         self.add_workspace(ws="a", session="sa", state="archived")
@@ -109,6 +115,27 @@ class ConductorDBTest(unittest.TestCase):
         self.add_workspace()
         self.add_message("s1", "assistant", assistant_prose(f"The README shows: {LIMIT_TEXT}"),
                          "2026-08-24T17:18:55Z")
+        self.assertIsNone(conductor.read_content("ws1"))
+
+    def test_detects_standing_codex_limit(self):
+        """Codex marks the session 'error' and stores the limit as an error envelope."""
+        self.add_workspace(agent_type="codex", status="error")
+        self.add_message("s1", "assistant", assistant_prose("working on it"), "2026-09-10T17:43:18Z")
+        self.add_message("s1", "assistant", codex_error(), "2026-09-10T17:43:20Z")
+        text = conductor.read_content("ws1")
+        self.assertEqual(text, CODEX_LIMIT_TEXT)
+        self.assertEqual(detect_session_limit(text).reset_label, "11:54 PM")
+
+    def test_ignores_codex_limit_already_resumed_past(self):
+        self.add_workspace(agent_type="codex")
+        self.add_message("s1", "assistant", codex_error(), "2026-09-10T17:43:20Z")
+        self.add_message("s1", "user", "continue", "2026-09-10T21:55:00Z")
+        self.assertIsNone(conductor.read_content("ws1"))
+
+    def test_ignores_codex_errors_it_retries(self):
+        self.add_workspace(agent_type="codex")
+        self.add_message("s1", "assistant", codex_error("Reconnecting... 5/5", will_retry=True),
+                         "2026-09-10T17:36:32Z")
         self.assertIsNone(conductor.read_content("ws1"))
 
     def test_ignores_working_session(self):

@@ -1,15 +1,15 @@
 """
 targets.py — A single watchable thing, and dispatch to the backend that owns it.
 
-Claude Code runs in places that have nothing in common mechanically: a Terminal.app
-tab is a pty read over AppleScript, a Conductor workspace is a SQLite row plus a
-WKWebView composer. `Target` is the thin seam between them, so `watcher.py` and
+Claude Code and Codex run in places that have nothing in common mechanically: a
+Terminal.app tab is a pty read over AppleScript, a Conductor workspace is a SQLite row
+plus a WKWebView composer. `Target` is the thin seam between them, so `watcher.py` and
 `app.py` never branch on where a session lives.
 
 The seam is deliberately narrow — enumerate, read, send:
 
-    list_targets()               -> every watchable Claude Code session
-    read_content(target)         -> text to scan for the session limit notice
+    list_targets()               -> every watchable agent session
+    read_content(target)         -> text to scan for the limit notice
     send_text_detailed(target, ) -> put a message into that session
 """
 
@@ -24,7 +24,7 @@ logger = logging.getLogger("claude_auto_resume.targets")
 
 
 class TargetKind(str, Enum):
-    """Where a watched Claude Code session lives."""
+    """Where a watched agent session lives."""
     TERMINAL = "terminal"
     CONDUCTOR = "conductor"
 
@@ -32,7 +32,7 @@ class TargetKind(str, Enum):
 @dataclass(frozen=True)
 class Target:
     """
-    One watchable Claude Code session.
+    One watchable Claude Code or Codex session.
 
     `ref` is whatever the owning backend needs to find it again: a TTY path for
     Terminal.app, a workspace id for Conductor. Nothing outside the backend
@@ -41,7 +41,7 @@ class Target:
     kind: TargetKind
     ref: str
     name: str      # Primary label, e.g. the tab title or workspace name
-    detail: str    # Secondary label, e.g. running processes or session title
+    detail: str    # Secondary label, e.g. running processes or agent + session title
 
     @property
     def key(self) -> str:
@@ -63,7 +63,10 @@ class Target:
 
 def list_targets() -> list[Target]:
     """
-    List every watchable Claude Code session across all supported hosts.
+    List every watchable agent session across all supported hosts.
+
+    Terminal tabs are listed whatever they run, since the tab itself doesn't say
+    whether that's Claude Code or Codex — the detector recognises either.
 
     A failure in one backend must not hide the other's sessions, so each is
     collected independently.
@@ -87,7 +90,7 @@ def list_targets() -> list[Target]:
                 kind=TargetKind.CONDUCTOR,
                 ref=session.workspace_id,
                 name=session.workspace_name,
-                detail=session.session_title,
+                detail=f"{session.agent_label}: {session.session_title}",
             ))
     except Exception as e:
         logger.error("Failed to list Conductor sessions: %s", e)
@@ -97,11 +100,11 @@ def list_targets() -> list[Target]:
 
 def read_content(target: Target) -> Optional[str]:
     """
-    Return text to scan for the session limit notice, or None if unavailable.
+    Return text to scan for the limit notice, or None if unavailable.
 
     What "content" means is backend-specific and intentionally so. Terminal.app
     returns everything on the visible screen and relies on the detector's regex to
-    find the notice. Conductor returns only messages Claude Code generated itself,
+    find the notice. Conductor returns only notices the agent's harness generated,
     because its transcripts routinely quote the limit text without being limited.
     """
     if target.kind is TargetKind.TERMINAL:

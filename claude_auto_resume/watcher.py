@@ -1,8 +1,8 @@
 """
 watcher.py — Per-target watcher with state machine.
 
-Each Watcher monitors a single Claude Code session — a Terminal.app tab or a
-Conductor workspace — transitioning through:
+Each Watcher monitors a single Claude Code or Codex session — a Terminal.app tab or
+a Conductor workspace — transitioning through:
     WATCHING → LIMIT_DETECTED → WAITING_TO_RESUME → RESUMED → WATCHING
 
 The watcher is driven by the main app's polling timer — it doesn't create
@@ -34,7 +34,7 @@ class WatcherState(Enum):
 @dataclass
 class Watcher:
     """
-    Manages the lifecycle of watching a single Claude Code session.
+    Manages the lifecycle of watching a single Claude Code or Codex session.
 
     The main app calls `poll()` on each tick, and `fire_resume()` when
     the scheduled timer goes off.
@@ -45,6 +45,7 @@ class Watcher:
     resume_count: int = 0                    # How many times we've auto-resumed
     last_error: Optional[str] = None
     _last_content_hash: Optional[int] = None  # Avoid re-processing identical content
+    _resumed_label: Optional[str] = None      # reset_label of the notice we last resumed from
 
     @property
     def status_text(self) -> str:
@@ -93,6 +94,7 @@ class Watcher:
                 self.last_error = "Terminal not found (closed?)"
                 logger.warning("Terminal %s returned no content", self.target.ref)
             self._last_content_hash = None
+            self._resumed_label = None
             return None
 
         # Skip if content hasn't changed
@@ -104,6 +106,13 @@ class Watcher:
         # Check for session limit message
         reset_info = detect_session_limit(content)
         if reset_info is None:
+            self._resumed_label = None
+            return None
+
+        # A terminal keeps showing the notice after we've resumed past it. Re-reading
+        # it would roll a same-day time forward to tomorrow, or make a dated one due
+        # again at once, so ignore it until it's gone or replaced by a different one.
+        if reset_info.reset_label == self._resumed_label:
             return None
 
         # Detected!
@@ -148,6 +157,7 @@ class Watcher:
 
             # Transition back to WATCHING for the next cycle
             self.state = WatcherState.WATCHING
+            self._resumed_label = self.reset_info.reset_label if self.reset_info else None
             self.reset_info = None
             self._last_content_hash = None  # Reset so we re-read fresh content
         else:

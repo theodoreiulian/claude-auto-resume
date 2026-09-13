@@ -1,6 +1,6 @@
 # Claude Auto-Resume
 
-A lightweight macOS menu bar app that automatically resumes your Claude Code session when you hit the 5-hour session limit — in Terminal.app or in [Conductor](https://conductor.build).
+A lightweight macOS menu bar app that automatically resumes your Claude Code or Codex session when you hit its usage limit — in Terminal.app or in [Conductor](https://conductor.build).
 
 ## What It Does
 
@@ -10,7 +10,14 @@ When Claude Code hits its session limit, it displays a message like:
 You've hit your session limit · resets 5:00 PM EDT
 ```
 
-Claude Auto-Resume watches your session for this message, extracts the reset time, and automatically sends `continue` one minute after the session resets — so your work picks up without you having to babysit it.
+Codex says it like this:
+
+```
+You've hit your usage limit. Upgrade to Pro (https://chatgpt.com/explore/pro), visit
+https://chatgpt.com/codex/settings/usage to purchase more credits or try again at 11:54 PM.
+```
+
+Claude Auto-Resume watches your session for either message, extracts the reset time, and automatically sends `continue` one minute after the limit resets — so your work picks up without you having to babysit it.
 
 ## Quick Start
 
@@ -28,8 +35,8 @@ That's it. A 👁‍🗨 icon appears in your menu bar.
 ## How to Use
 
 1. **Click the menu bar icon** (👁‍🗨) → **Watch Session**
-2. **Select the session** running Claude Code — a Terminal.app tab or a Conductor
-   workspace, grouped by which app they're in
+2. **Select the session** running Claude Code or Codex — a Terminal.app tab or a
+   Conductor workspace, grouped by which app they're in
 3. **Done.** The app will:
    - Poll the session every 15 seconds
    - Detect the session limit message when it appears
@@ -55,15 +62,28 @@ Click **Active Watches** to see everything you're monitoring and its current sta
 | **Terminal.app** | Reads the visible tab contents over AppleScript | Automation (prompted on first use) |
 | **Conductor** | Reads Conductor's local session database | Accessibility (grant by hand — see below) |
 
-Conductor runs Claude Code headlessly rather than in a terminal, so there is no screen
+Conductor runs agents headlessly rather than in a terminal, so there is no screen
 to scrape. Instead the app reads Conductor's own SQLite store and looks for the limit
-notice that Claude Code emits, which means detection keeps working while Conductor is
-in the background or minimised.
+notice the agent emits — a synthetic message from Claude Code, a turn error from
+Codex — which means detection keeps working while Conductor is in the background or
+minimised.
+
+**Codex notes:**
+
+- Codex gives the reset in your Mac's local time, and adds the date when it isn't
+  today (`try again at Sep 10th, 2026 2:22 AM`). A dated reset that has already passed
+  resumes straight away.
+- A notice that ends `try again later.` has no time to schedule against, so it's not
+  acted on.
+- In Terminal.app, the Codex CLI may open an **Approaching rate limits** prompt offering
+  to switch to a cheaper model. It swallows typed text and Return would accept the
+  switch, so the app dismisses it with Esc — never accepting it — before typing
+  `continue`.
 
 **Conductor caveats:**
 
-- Only **Claude Code** sessions are watched. Conductor can also drive Codex, Cursor and
-  OpenCode; those use different limits and are skipped.
+- Only **Claude Code** and **Codex** sessions are watched. Conductor can also drive
+  Cursor and OpenCode; those are skipped.
 - Only the session **currently open in a workspace** is watched — Conductor keeps one
   active session per workspace, and that's the one you see.
 - Resuming **takes over the screen briefly**. Conductor renders one workspace at a time
@@ -127,7 +147,7 @@ Run `./doctor.sh` to see every watchable session and confirm permissions are gra
 ### "No sessions found"
 - Make sure Terminal.app is open with at least one window, or Conductor has a workspace open
 - If you just opened the app, click **↻ Refresh**
-- Conductor sessions only appear for **Claude Code** — not Codex, Cursor or OpenCode
+- Conductor sessions only appear for **Claude Code** and **Codex** — not Cursor or OpenCode
 
 ### App can't read terminal content
 - Check **System Settings → Privacy & Security → Automation**
@@ -145,7 +165,7 @@ Run `./doctor.sh` to see every watchable session and confirm permissions are gra
 
 ### "continue" not being sent
 - Make sure the terminal tab or Conductor workspace is still open
-- Check that the Claude Code session is actually waiting for input
+- Check that the Claude Code or Codex session is actually waiting for input
 - The app sends `continue` at reset time + 1 minute to ensure the session has fully reset
 
 ## Contributing
