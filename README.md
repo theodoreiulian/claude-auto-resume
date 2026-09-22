@@ -1,6 +1,7 @@
 # Claude Auto-Resume
 
-A lightweight macOS menu bar app that automatically resumes your Claude Code or Codex session when you hit its usage limit — in Terminal.app or in [Conductor](https://conductor.build).
+A lightweight macOS menu bar app that automatically resumes your Claude Code or Codex session when you hit its usage limit — in Terminal.app, in [Conductor](https://conductor.build), or in the
+Codex desktop app (the ChatGPT app's **Work** mode).
 
 ## What It Does
 
@@ -35,8 +36,8 @@ That's it. A 👁‍🗨 icon appears in your menu bar.
 ## How to Use
 
 1. **Click the menu bar icon** (👁‍🗨) → **Watch Session**
-2. **Select the session** running Claude Code or Codex — a Terminal.app tab or a
-   Conductor workspace, grouped by which app they're in
+2. **Select the session** running Claude Code or Codex — a Terminal.app tab, a
+   Conductor workspace or a Codex app thread, grouped by which app they're in
 3. **Done.** The app will:
    - Poll the session every 15 seconds
    - Detect the session limit message when it appears
@@ -61,6 +62,7 @@ Click **Active Watches** to see everything you're monitoring and its current sta
 |------|------------------|------------------|
 | **Terminal.app** | Reads the visible tab contents over AppleScript | Automation (prompted on first use) |
 | **Conductor** | Reads Conductor's local session database | Accessibility (grant by hand — see below) |
+| **Codex app** | Reads Codex's local thread database | None |
 
 Conductor runs agents headlessly rather than in a terminal, so there is no screen
 to scrape. Instead the app reads Conductor's own SQLite store and looks for the limit
@@ -100,6 +102,27 @@ minimised.
   is closed, and a closed window can't be reopened programmatically, so resumes
   will fail with a clear message until you reopen it. Minimising is fine.
 
+**Codex app caveats:**
+
+- This is the Codex that lives in the ChatGPT desktop app's **Work** mode. The menu
+  lists the 20 most recently active threads **started in the app**. Codex sessions
+  from Conductor or the Codex CLI share the same store, but they're watched through
+  their own hosts.
+- A limit is read from the thread's own record of its latest turn: a turn that failed
+  with `usageLimitExceeded`. A thread that only *mentions* the limit message can't
+  trigger a resume.
+- `continue` is sent through the app's local IPC socket (`~/.codex/ipc/ipc.sock`),
+  the same channel the app's windows use to hand each other messages. It shows up
+  in the thread as an ordinary message from you. Nothing is typed, and no
+  Accessibility permission is needed.
+- **The app must be running** when a resume fires. It doesn't need to be in front,
+  and the thread doesn't need to be the one on screen. If the thread isn't loaded,
+  the app is asked to open it (`codex://threads/<id>`). That can briefly bring the
+  app forward; if it does, focus is handed back to the app you were using.
+- The IPC protocol is internal to the Codex app and could change in an update. If it
+  does, you get a "Resume Failed" notification that says so, rather than a silent
+  miss.
+
 ## Permissions
 
 On first run, macOS will ask you to grant **Automation** permissions so the app can read terminal content and send commands. You'll see a prompt like:
@@ -127,6 +150,7 @@ claude-auto-resume/
     ├── targets.py              # Common target type + backend dispatch
     ├── terminal.py             # Terminal.app, over AppleScript
     ├── conductor.py            # Conductor, over its SQLite store + Accessibility
+    ├── codex_app.py            # Codex desktop app, over its SQLite store + IPC socket
     ├── detector.py             # Session limit message parser
     ├── watcher.py              # Per-target watcher state machine
     └── doctor.py               # Environment/permission check
@@ -146,6 +170,8 @@ Run `./doctor.sh` to see every watchable session and confirm permissions are gra
 
 ### "No sessions found"
 - Make sure Terminal.app is open with at least one window, or Conductor has a workspace open
+- Codex app threads appear only if they were started in the app (not in Conductor or
+  the CLI), and only the 20 most recently active are listed
 - If you just opened the app, click **↻ Refresh**
 - Conductor sessions only appear for **Claude Code** and **Codex** — not Cursor or OpenCode
 
@@ -163,8 +189,14 @@ Run `./doctor.sh` to see every watchable session and confirm permissions are gra
 - Keep the Conductor window open. The app can switch workspaces for you, but it can't
   reopen a closed window.
 
+### Codex app resumes fail
+- Keep the Codex (ChatGPT) app running. Quitting it closes the socket the app sends
+  through.
+- A "rejected the message: request-version-mismatch" error means the Codex app was
+  updated in a way this app doesn't support yet.
+
 ### "continue" not being sent
-- Make sure the terminal tab or Conductor workspace is still open
+- Make sure the terminal tab, Conductor workspace or Codex thread is still open
 - Check that the Claude Code or Codex session is actually waiting for input
 - The app sends `continue` at reset time + 1 minute to ensure the session has fully reset
 

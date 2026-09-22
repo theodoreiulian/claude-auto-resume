@@ -3,7 +3,8 @@ targets.py — A single watchable thing, and dispatch to the backend that owns i
 
 Claude Code and Codex run in places that have nothing in common mechanically: a
 Terminal.app tab is a pty read over AppleScript, a Conductor workspace is a SQLite row
-plus a WKWebView composer. `Target` is the thin seam between them, so `watcher.py` and
+plus a WKWebView composer, a Codex desktop-app thread is a SQLite row plus an IPC
+socket. `Target` is the thin seam between them, so `watcher.py` and
 `app.py` never branch on where a session lives.
 
 The seam is deliberately narrow — enumerate, read, send:
@@ -18,7 +19,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Optional
 
-from . import conductor, terminal
+from . import codex_app, conductor, terminal
 
 logger = logging.getLogger("claude_auto_resume.targets")
 
@@ -27,6 +28,14 @@ class TargetKind(str, Enum):
     """Where a watched agent session lives."""
     TERMINAL = "terminal"
     CONDUCTOR = "conductor"
+    CODEX_APP = "codex_app"
+
+
+_SOURCE_LABELS = {
+    TargetKind.TERMINAL: "Terminal",
+    TargetKind.CONDUCTOR: "Conductor",
+    TargetKind.CODEX_APP: "Codex app",
+}
 
 
 @dataclass(frozen=True)
@@ -35,7 +44,7 @@ class Target:
     One watchable Claude Code or Codex session.
 
     `ref` is whatever the owning backend needs to find it again: a TTY path for
-    Terminal.app, a workspace id for Conductor. Nothing outside the backend
+    Terminal.app, a workspace id for Conductor, a thread id for the Codex app. Nothing outside the backend
     interprets it.
     """
     kind: TargetKind
@@ -51,7 +60,7 @@ class Target:
     @property
     def source_label(self) -> str:
         """Human name of the app hosting this session."""
-        return "Terminal" if self.kind is TargetKind.TERMINAL else "Conductor"
+        return _SOURCE_LABELS[self.kind]
 
     @property
     def menu_label(self) -> str:
@@ -95,6 +104,17 @@ def list_targets() -> list[Target]:
     except Exception as e:
         logger.error("Failed to list Conductor sessions: %s", e)
 
+    try:
+        for thread in codex_app.list_threads():
+            targets.append(Target(
+                kind=TargetKind.CODEX_APP,
+                ref=thread.thread_id,
+                name=thread.title,
+                detail=thread.project or "No project",
+            ))
+    except Exception as e:
+        logger.error("Failed to list Codex app threads: %s", e)
+
     return targets
 
 
@@ -104,11 +124,14 @@ def read_content(target: Target) -> Optional[str]:
 
     What "content" means is backend-specific and intentionally so. Terminal.app
     returns everything on the visible screen and relies on the detector's regex to
-    find the notice. Conductor returns only notices the agent's harness generated,
-    because its transcripts routinely quote the limit text without being limited.
+    find the notice. Conductor and the Codex app return only notices the agent's
+    harness generated, because their transcripts routinely quote the limit text
+    without being limited.
     """
     if target.kind is TargetKind.TERMINAL:
         return terminal.read_content(target.ref)
+    if target.kind is TargetKind.CODEX_APP:
+        return codex_app.read_content(target.ref)
     return conductor.read_content(target.ref)
 
 
@@ -116,4 +139,6 @@ def send_text_detailed(target: Target, text: str) -> tuple[bool, Optional[str]]:
     """Send `text` + Return to a target. Returns (success, error message)."""
     if target.kind is TargetKind.TERMINAL:
         return terminal.send_text_detailed(target.ref, text)
+    if target.kind is TargetKind.CODEX_APP:
+        return codex_app.send_text_detailed(target.ref, text)
     return conductor.send_text_detailed(target.ref, text)

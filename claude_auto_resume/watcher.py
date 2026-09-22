@@ -1,8 +1,8 @@
 """
 watcher.py — Per-target watcher with state machine.
 
-Each Watcher monitors a single Claude Code or Codex session — a Terminal.app tab or
-a Conductor workspace — transitioning through:
+Each Watcher monitors a single Claude Code or Codex session — a Terminal.app tab, a
+Conductor workspace or a Codex desktop-app thread — transitioning through:
     WATCHING → LIMIT_DETECTED → WAITING_TO_RESUME → RESUMED → WATCHING
 
 The watcher is driven by the main app's polling timer — it doesn't create
@@ -87,9 +87,10 @@ class Watcher:
 
         if content is None:
             # What "no content" means depends on the backend. A Terminal tab that reads
-            # back nothing has been closed, which is worth surfacing. Conductor returns
-            # None on almost every poll — it only reports standing limit notices — so
-            # treating that as an error would flag every healthy session as broken.
+            # back nothing has been closed, which is worth surfacing. Conductor and the
+            # Codex app return None on almost every poll — they only report standing
+            # limit notices — so treating that as an error would flag every healthy
+            # session as broken.
             if self.target.kind is TargetKind.TERMINAL:
                 self.last_error = "Terminal not found (closed?)"
                 logger.warning("Terminal %s returned no content", self.target.ref)
