@@ -9,7 +9,7 @@ limit, which is exactly when nobody is watching.
 
 import sys
 
-from . import conductor, terminal
+from . import codex_app, conductor, terminal
 from .targets import TargetKind, list_targets
 
 OK = "✅"
@@ -24,6 +24,7 @@ def main() -> int:
     targets = list_targets()
     terminals = [t for t in targets if t.kind is TargetKind.TERMINAL]
     sessions = [t for t in targets if t.kind is TargetKind.CONDUCTOR]
+    threads = [t for t in targets if t.kind is TargetKind.CODEX_APP]
 
     # ── Terminal.app ───────────────────────────────────────────────────
     print("\nTerminal.app")
@@ -73,6 +74,25 @@ def main() -> int:
             print(f"  {FAIL} Accessibility permission missing — auto-resume will fail.")
             print("     Grant it in System Settings → Privacy & Security → Accessibility,")
             print("     adding the app you launch ./run.sh from (usually Terminal).")
+
+    # ── Codex app ──────────────────────────────────────────────────────
+    print("\nCodex app (ChatGPT)")
+    if not codex_app.is_available():
+        print(f"  {WARN} Not found (no Codex databases in {codex_app.CODEX_HOME})")
+    else:
+        print(f"  {OK} Installed")
+        if codex_app.is_running():
+            print(f"  {OK} Running (needed to send 'continue')")
+        else:
+            print(f"  {FAIL} Not running — resumes will fail until it's reopened.")
+        if threads:
+            print(f"  {OK} {len(threads)} recent thread(s)")
+            for t in threads:
+                limited = codex_app.read_content(t.ref)
+                state = f"limited — {limited}" if limited else "no limit detected"
+                print(f"     • {t.menu_label} — {state}")
+        else:
+            print(f"  {WARN} No threads started in the app yet")
 
     print("\n" + "━" * 46)
     return 0

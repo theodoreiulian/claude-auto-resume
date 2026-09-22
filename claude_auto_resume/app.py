@@ -2,7 +2,8 @@
 app.py — Main Claude Auto-Resume menu bar application.
 
 A lightweight macOS menu bar app built with rumps that:
-1. Lists open Claude Code and Codex sessions — Terminal.app tabs and Conductor workspaces
+1. Lists open Claude Code and Codex sessions — Terminal.app tabs, Conductor workspaces
+   and Codex desktop-app threads
 2. Lets the user select sessions to watch
 3. Polls watched sessions for session limit messages
 4. Schedules automatic "continue" sends at the reset time + 1 minute
@@ -96,10 +97,10 @@ class ClaudeAutoResumeApp(rumps.App):
         if not available:
             self.watch_menu.add(rumps.MenuItem("No sessions found", callback=None))
         else:
-            # Group by host so a long list of Terminal tabs doesn't bury Conductor's
-            # workspaces (and vice versa). Headers are inert menu items.
+            # Group by host so a long list from one app doesn't bury the others.
+            # Headers are inert menu items.
             first_group = True
-            for kind in (TargetKind.TERMINAL, TargetKind.CONDUCTOR):
+            for kind in TargetKind:
                 group = [t for t in available if t.kind is kind]
                 if not group:
                     continue
